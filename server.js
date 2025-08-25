@@ -4,8 +4,15 @@ const { WebSocketServer } = require('ws');
 const path = require('path');
 const fs = require('fs');
 
+// CRITICAL FIX: Ensure the recordings directory exists before starting the server
+const recordingsDir = path.join(__dirname, 'recordings');
+if (!fs.existsSync(recordingsDir)) {
+  fs.mkdirSync(recordingsDir);
+  console.log('Created recordings directory.');
+}
+
 const app = express();
-const PORT = process.env.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
 // Serve static files from the 'public' directory
 app.use(express.static('public'));
@@ -68,7 +75,7 @@ wss.on('connection', (ws) => {
         if (sessions[data.code]) {
           // If this is the first audio chunk from the host, create the file stream
           if (!sessions[data.code].fileStream) {
-            const fileStream = fs.createWriteStream(path.join(__dirname, 'recordings', `recording-${data.code}.webm`));
+            const fileStream = fs.createWriteStream(path.join(recordingsDir, `recording-${data.code}.webm`));
             sessions[data.code].fileStream = fileStream;
             sessions[data.code].host = ws;
             console.log(`Host connected to session: ${data.code}`);
