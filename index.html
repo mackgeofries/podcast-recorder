@@ -46,17 +46,6 @@
             </button>
         </div>
 
-        <div id="code-view" class="hidden space-y-4">
-            <p class="text-lg">Give this code to your guest:</p>
-            <div class="bg-gray-700 px-6 py-4 rounded-lg">
-                <span id="session-code" class="text-4xl font-mono tracking-widest text-green-400"></span>
-            </div>
-            <p class="text-sm text-gray-400 mt-2">The guest's recording will be saved to your server once they join and stop.</p>
-            <button id="back-to-start-btn" class="mt-4 text-sm text-indigo-400 hover:text-indigo-200 transition-colors duration-200">
-                &larr; Back
-            </button>
-        </div>
-
         <div id="guest-view" class="hidden space-y-4">
             <p class="text-lg">Enter the session code to join and record.</p>
             <input type="text" id="guest-code-input" placeholder="Enter 6-digit code" class="w-full px-4 py-3 bg-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-center text-lg tracking-wider">
@@ -67,9 +56,19 @@
                 &larr; Back
             </button>
         </div>
-
+        
         <div id="recording-view" class="hidden space-y-4">
-            <p id="recording-status-text" class="text-lg text-green-400"></p>
+            <div id="host-recording-info" class="hidden">
+                <p class="text-lg">Session Code:</p>
+                <div class="bg-gray-700 px-6 py-4 rounded-lg mb-4">
+                    <span id="session-code" class="text-4xl font-mono tracking-widest text-green-400"></span>
+                </div>
+                <p id="recording-status-text" class="text-lg text-green-400"></p>
+            </div>
+            <div id="guest-recording-info" class="hidden">
+                <p id="guest-status-text" class="text-lg text-green-400"></p>
+            </div>
+
             <p class="text-sm text-gray-400">Your audio is being sent to the server. Do not close this window.</p>
             <div class="mt-4">
                 <button id="stop-btn" class="w-full px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200 hidden">
@@ -92,9 +91,11 @@
         const roleSelectView = document.getElementById('role-select-view');
         const hostView = document.getElementById('host-view');
         const guestView = document.getElementById('guest-view');
-        const codeView = document.getElementById('code-view');
         const recordingView = document.getElementById('recording-view');
+        const hostRecordingInfo = document.getElementById('host-recording-info');
+        const guestRecordingInfo = document.getElementById('guest-recording-info');
         const recordingStatusText = document.getElementById('recording-status-text');
+        const guestStatusText = document.getElementById('guest-status-text');
         const stopBtn = document.getElementById('stop-btn');
         const downloadArea = document.getElementById('download-area');
         const downloadLink = document.getElementById('download-link');
@@ -103,7 +104,6 @@
         const guestSelectBtn = document.getElementById('guest-select-btn');
         const startBtn = document.getElementById('start-btn');
         const joinBtn = document.getElementById('join-btn');
-        const backToStartBtnHost = document.getElementById('back-to-start-btn');
         const backToStartBtnGuest = document.getElementById('back-to-start-btn-guest');
 
         const sessionCodeSpan = document.getElementById('session-code');
@@ -114,10 +114,11 @@
         let ws;
         let mediaRecorder;
         let wakeLock = null;
+        let isHost = false;
 
         // --- UI State Management Functions ---
         const showView = (viewId) => {
-            const views = [roleSelectView, hostView, guestView, codeView, recordingView];
+            const views = [roleSelectView, hostView, guestView, recordingView];
             views.forEach(view => view.classList.add('hidden'));
             const viewToShow = document.getElementById(viewId);
             if (viewToShow) {
@@ -183,52 +184,75 @@
             showView('role-select-view');
         });
 
-        hostSelectBtn.addEventListener('click', () => showView('host-view'));
-        guestSelectBtn.addEventListener('click', () => showView('guest-view'));
-        backToStartBtnHost.addEventListener('click', () => showView('host-view'));
+        hostSelectBtn.addEventListener('click', () => {
+            isHost = true;
+            showView('host-view');
+        });
+
+        guestSelectBtn.addEventListener('click', () => {
+            isHost = false;
+            showView('guest-view');
+        });
+
         backToStartBtnGuest.addEventListener('click', () => showView('role-select-view'));
 
         startBtn.addEventListener('click', async () => {
             showMessage("Generating session code...", 'info');
             try {
+                // First, fetch the session code
+                const response = await fetch('/start-session');
+                const data = await response.json();
+
+                if (!data.uniqueCode) {
+                    showMessage("Could not generate a session code. Please try again.", 'error');
+                    return;
+                }
+                
+                // Then, get microphone access and start recording
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
                 const wsUrl = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}`;
                 ws = new WebSocket(wsUrl);
 
-                ws.onopen = async () => {
+                ws.onopen = () => {
                     console.log('Host WebSocket connection opened.');
-                    const response = await fetch('/start-session');
-                    const data = await response.json();
                     
-                    if (data.uniqueCode) {
-                        sessionCodeSpan.textContent = data.uniqueCode;
-                        showView('code-view');
-                        showMessage("Session code generated! Awaiting guest.", 'success');
+                    mediaRecorder.ondataavailable = event => {
+                        if (event.data.size > 0) {
+                            const reader = new FileReader();
+                            reader.readAsDataURL(event.data);
+                            reader.onloadend = () => {
+                                const base64Audio = reader.result.split(',')[1];
+                                ws.send(JSON.stringify({
+                                    type: 'host_audio',
+                                    code: data.uniqueCode,
+                                    audioData: base64Audio
+                                }));
+                            };
+                        }
+                    };
 
-                        mediaRecorder.ondataavailable = event => {
-                            if (event.data.size > 0) {
-                                const reader = new FileReader();
-                                reader.readAsDataURL(event.data);
-                                reader.onloadend = () => {
-                                    const base64Audio = reader.result.split(',')[1];
-                                    ws.send(JSON.stringify({
-                                        type: 'host_audio',
-                                        code: data.uniqueCode,
-                                        audioData: base64Audio
-                                    }));
-                                };
-                            }
-                        };
-                        mediaRecorder.start(1000);
-                        
-                        showView('recording-view');
-                        recordingStatusText.textContent = "You are recording! Awaiting guest...";
-                        stopBtn.classList.remove('hidden');
-                        requestWakeLock();
-                    } else {
-                        showMessage("Could not generate a session code. Please try again.", 'error');
+                    mediaRecorder.start(1000);
+                    
+                    // Show combined host recording view
+                    showView('recording-view');
+                    hostRecordingInfo.classList.remove('hidden');
+                    guestRecordingInfo.classList.add('hidden');
+                    sessionCodeSpan.textContent = data.uniqueCode;
+                    recordingStatusText.textContent = "You are recording! Awaiting guest...";
+                    stopBtn.classList.remove('hidden');
+                    requestWakeLock();
+                };
+
+                ws.onmessage = event => {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'recording_saved') {
+                        // The server sent a message that the recording is saved, so we can now download it.
+                        downloadLink.href = data.downloadUrl;
+                        downloadArea.classList.remove('hidden');
+                        showMessage("Recording saved successfully! Download your file below.", 'success');
+                        mediaRecorder.stop();
                         ws.close();
                     }
                 };
@@ -265,6 +289,7 @@
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                 showMessage("Stopping and saving recording...", 'info');
                 ws.send(JSON.stringify({ type: 'stop' }));
+                stopBtn.classList.add('hidden');
             }
         });
 
@@ -298,7 +323,9 @@
                     ws.send(JSON.stringify({ type: 'start', code: code }));
                     
                     showView('recording-view');
-                    recordingStatusText.textContent = "You are recording! The host will end the session.";
+                    hostRecordingInfo.classList.add('hidden');
+                    guestRecordingInfo.classList.remove('hidden');
+                    guestStatusText.textContent = "You are recording! The host will end the session.";
                     stopBtn.classList.add('hidden');
                     requestWakeLock();
                 };
