@@ -161,18 +161,68 @@
         startBtn.addEventListener('click', async () => {
             showMessage("Generating session code...", 'info');
             try {
-                const response = await fetch('/start-session');
-                const data = await response.json();
-                if (data.uniqueCode) {
-                    sessionCodeSpan.textContent = data.uniqueCode;
-                    showView('code-view');
-                    showMessage("Session code generated! Awaiting guest.", 'success');
-                } else {
-                    showMessage("Could not generate a session code. Please try again.", 'error');
-                }
+                // Get microphone access for the host
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+                // Connect to WebSocket and start recording
+                const wsUrl = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}`;
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = async () => {
+                    console.log('Host WebSocket connection opened.');
+
+                    // Request a unique session code from the server
+                    const response = await fetch('/start-session');
+                    const data = await response.json();
+                    
+                    if (data.uniqueCode) {
+                        sessionCodeSpan.textContent = data.uniqueCode;
+                        showView('code-view');
+                        showMessage("Session code generated! Awaiting guest.", 'success');
+
+                        // Start sending audio data to the server
+                        mediaRecorder.ondataavailable = event => {
+                            if (event.data.size > 0) {
+                                const reader = new FileReader();
+                                reader.readAsDataURL(event.data);
+                                reader.onloadend = () => {
+                                    const base64Audio = reader.result.split(',')[1];
+                                    ws.send(JSON.stringify({
+                                        type: 'host_audio',
+                                        code: data.uniqueCode,
+                                        audioData: base64Audio
+                                    }));
+                                };
+                            }
+                        };
+                        mediaRecorder.start(1000); // Record in 1-second chunks
+                    } else {
+                        showMessage("Could not generate a session code. Please try again.", 'error');
+                        ws.close(); // Close the WebSocket if we can't get a code
+                    }
+                };
+
+                ws.onclose = () => {
+                    console.log('WebSocket connection closed.');
+                    if (mediaRecorder) {
+                        mediaRecorder.stop();
+                    }
+                    showMessage("Connection lost. Please check your network and try again.", 'error');
+                    showView('host-view'); // Return to the host view
+                };
+
+                ws.onerror = error => {
+                    console.error('WebSocket error:', error);
+                    showMessage("An error occurred with the connection.", 'error');
+                    if (mediaRecorder) {
+                        mediaRecorder.stop();
+                    }
+                };
+
             } catch (error) {
-                console.error('Error generating session code:', error);
-                showMessage("An error occurred while generating the session code.", 'error');
+                console.error('Microphone access or WebSocket connection failed:', error);
+                showMessage("Could not access microphone or connect. Check permissions.", 'error');
             }
         });
 
@@ -202,7 +252,7 @@
                 ws = new WebSocket(wsUrl);
 
                 ws.onopen = async () => {
-                    console.log('WebSocket connection opened.');
+                    console.log('Guest WebSocket connection opened.');
                     // Request microphone access first
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
@@ -215,7 +265,8 @@
                             reader.onloadend = () => {
                                 const base64Audio = reader.result.split(',')[1];
                                 ws.send(JSON.stringify({
-                                    type: 'audio',
+                                    type: 'guest_audio',
+                                    code: code,
                                     audioData: base64Audio
                                 }));
                             };
