@@ -9,15 +9,15 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Map to store active sessions and their unique codes
+// A map to store active sessions. Key: uniqueCode, Value: WebSocket connection
 const sessions = new Map();
 
-// Serve the index.html file
+// Serve the index.html file from the root directory
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// A route for starting a new recording session
+// A route for starting a new recording session and generating a code
 app.get('/start-session', (req, res) => {
     // Generate a new, unique 6-digit code for the session
     const uniqueCode = crypto.randomInt(100000, 999999).toString();
@@ -38,6 +38,8 @@ wss.on('connection', ws => {
 
             if (data.type === 'start') {
                 const { code } = data;
+                console.log(`Received start message with code: ${code}`);
+
                 // Check if the provided code is valid and not already in use
                 if (sessions.has(code) && sessions.get(code) === null) {
                     sessionCode = code;
@@ -46,23 +48,29 @@ wss.on('connection', ws => {
 
                     // Create a new file stream for the audio data
                     const filename = `recording-${sessionCode}.webm`;
-                    fileStream = fs.createWriteStream(path.join(__dirname, 'recordings', filename));
+                    const filePath = path.join(__dirname, 'recordings', filename);
+                    console.log(`Creating file stream at: ${filePath}`);
+                    fileStream = fs.createWriteStream(filePath);
                     ws.send(JSON.stringify({ type: 'status', message: 'Recording started.' }));
                 } else {
+                    console.log(`Invalid or already in-use code: ${code}`);
                     ws.send(JSON.stringify({ type: 'error', message: 'Invalid or already in-use session code.' }));
                     ws.close();
                 }
             } else if (data.type === 'audio' && sessionCode) {
                 // Write the incoming audio data to the file
-                fileStream.write(Buffer.from(data.audioData, 'base64'));
+                if (fileStream) {
+                    fileStream.write(Buffer.from(data.audioData, 'base64'));
+                }
             } else if (data.type === 'stop' && sessionCode) {
+                console.log(`Received stop message for session: ${sessionCode}`);
                 // Finalize the file and clean up the session
                 if (fileStream) {
                     fileStream.end();
-                    console.log(`Recording for session ${sessionCode} saved.`);
+                    console.log(`Recording for session ${sessionCode} saved to disk.`);
+                    ws.send(JSON.stringify({ type: 'recording_saved', message: 'Recording saved successfully.' }));
                 }
                 sessions.delete(sessionCode);
-                ws.close();
             }
         } catch (e) {
             console.error('Error handling message:', e);
@@ -72,8 +80,9 @@ wss.on('connection', ws => {
 
     ws.on('close', () => {
         console.log('Client disconnected.');
-        // Clean up resources if still active
+        // If the connection closes unexpectedly, clean up the file stream
         if (fileStream && !fileStream.writableEnded) {
+            console.log('Client disconnected unexpectedly. Ending file stream.');
             fileStream.end();
         }
     });
@@ -83,10 +92,13 @@ wss.on('connection', ws => {
     });
 });
 
-// Create a directory for recordings if it doesn't exist
+// --- Create the 'recordings' directory if it doesn't exist ---
 const recordingsDir = path.join(__dirname, 'recordings');
 if (!fs.existsSync(recordingsDir)) {
     fs.mkdirSync(recordingsDir);
+    console.log('Created the "recordings" directory.');
+} else {
+    console.log('The "recordings" directory already exists.');
 }
 
 const PORT = process.env.PORT || 3000;

@@ -1,80 +1,77 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Podcast Interview Recorder</title>
-    <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
-    <link rel="preconnect" href="[https://fonts.googleapis.com](https://fonts.googleapis.com)">
-    <link rel="preconnect" href="[https://fonts.gstatic.com](https://fonts.gstatic.com)" crossorigin>
-    <link href="[https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap](https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap)" rel="stylesheet">
-    <style>
-        body {
-            font-family: 'Inter', sans-serif;
-        }
-    </style>
-</head>
-<body class="bg-gray-900 text-gray-200 flex items-center justify-center min-h-screen p-4">
 
-    <div class="bg-gray-800 p-8 rounded-xl shadow-lg w-full max-w-xl text-center">
-        <h1 class="text-3xl font-bold mb-6 text-white">Podcast Interview Recorder</h1>
-
-        <div id="setup-view" class="space-y-4">
-            <p class="text-lg">As the host, click the button below to generate a new session code for your guest.</p>
-            <button id="start-btn" class="w-full px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200">
-                Generate Session Code
+            <p class="text-sm text-gray-400 mt-2">The guest's recording will be saved to your server once they join and stop.</p>
+            <button id="back-to-start-btn" class="mt-4 text-sm text-indigo-400 hover:text-indigo-200 transition-colors duration-200">
+                &larr; Back
             </button>
         </div>
 
-        <div id="code-view" class="hidden space-y-4">
-            <p class="text-lg">Your guest should use this code to join the session:</p>
-            <div class="bg-gray-700 px-6 py-4 rounded-lg">
-                <span id="session-code" class="text-4xl font-mono tracking-widest text-green-400"></span>
-            </div>
-            <p class="text-sm text-gray-400">This code is active as soon as a guest connects.</p>
-        </div>
-
         <div id="guest-view" class="hidden space-y-4">
-            <p class="text-lg">Enter the session code to join the interview.</p>
+            <p class="text-lg">Enter the session code to join and record.</p>
             <input type="text" id="guest-code-input" placeholder="Enter 6-digit code" class="w-full px-4 py-3 bg-gray-700 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-center text-lg tracking-wider">
             <button id="join-btn" class="w-full px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200">
                 Join Session
+            </button>
+            <button id="back-to-start-btn-guest" class="mt-4 text-sm text-indigo-400 hover:text-indigo-200 transition-colors duration-200">
+                &larr; Back
             </button>
         </div>
 
         <div id="recording-view" class="hidden space-y-4">
             <p class="text-lg text-green-400">You are connected and recording!</p>
-            <p class="text-sm text-gray-400">The recording is being sent to the server. Do not close this window.</p>
+            <p class="text-sm text-gray-400">Your audio is being sent to the host's server. Do not close this window.</p>
             <div class="mt-4">
                 <button id="stop-btn" class="w-full px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200">
                     Stop Recording
                 </button>
             </div>
         </div>
-
-        <div id="message-box" class="mt-6 p-4 rounded-lg text-sm transition-all duration-200 ease-in-out hidden"></div>
+        
+        <div id="message-box" class="mt-6 p-4 rounded-lg text-sm hidden"></div>
 
     </div>
 
     <script>
+        // DOM Elements
+        const roleSelectView = document.getElementById('role-select-view');
+        const hostView = document.getElementById('host-view');
+        const guestView = document.getElementById('guest-view');
+        const codeView = document.getElementById('code-view');
+        const recordingView = document.getElementById('recording-view');
+
+        const hostSelectBtn = document.getElementById('host-select-btn');
+        const guestSelectBtn = document.getElementById('guest-select-btn');
         const startBtn = document.getElementById('start-btn');
         const joinBtn = document.getElementById('join-btn');
         const stopBtn = document.getElementById('stop-btn');
+        const backToStartBtnHost = document.getElementById('back-to-start-btn');
+        const backToStartBtnGuest = document.getElementById('back-to-start-btn-guest');
+
         const sessionCodeSpan = document.getElementById('session-code');
         const guestCodeInput = document.getElementById('guest-code-input');
-        const setupView = document.getElementById('setup-view');
-        const codeView = document.getElementById('code-view');
-        const guestView = document.getElementById('guest-view');
-        const recordingView = document.getElementById('recording-view');
         const messageBox = document.getElementById('message-box');
 
+        // State variables
         let ws;
         let mediaRecorder;
 
-        // Function to show a message in the message box
+        // --- UI State Management Functions ---
+        const showView = (viewId) => {
+            // Hide all views first
+            roleSelectView.classList.add('hidden');
+            hostView.classList.add('hidden');
+            guestView.classList.add('hidden');
+            codeView.classList.add('hidden');
+            recordingView.classList.add('hidden');
+
+            // Then show the requested view
+            document.getElementById(viewId).classList.remove('hidden');
+        };
+
         const showMessage = (message, type = 'info') => {
             messageBox.textContent = message;
-            messageBox.classList.remove('hidden', 'bg-red-500', 'bg-green-500', 'bg-blue-500');
+            messageBox.className = 'mt-6 p-4 rounded-lg text-sm';
+            messageBox.classList.remove('hidden');
+
             if (type === 'error') {
                 messageBox.classList.add('bg-red-500', 'text-white');
             } else if (type === 'success') {
@@ -82,38 +79,28 @@
             } else {
                 messageBox.classList.add('bg-blue-500', 'text-white');
             }
+            
+            // Hide message after 5 seconds
+            setTimeout(() => {
+                messageBox.classList.add('hidden');
+            }, 5000);
         };
 
-        // Check if the user is the host or a guest
-        // This is a simple heuristic; a real app would use a more robust login
-        const isHost = () => {
-            try {
-                return window.location.search.includes('host');
-            } catch (e) {
-                // If running locally or without a URL, assume host for testing
-                return true;
-            }
-        };
+        // --- Event Listeners ---
+        hostSelectBtn.addEventListener('click', () => showView('host-view'));
+        guestSelectBtn.addEventListener('click', () => showView('guest-view'));
+        backToStartBtnHost.addEventListener('click', () => showView('host-view'));
+        backToStartBtnGuest.addEventListener('click', () => showView('role-select-view'));
 
-        // Determine which view to show on page load
-        if (isHost()) {
-            setupView.classList.remove('hidden');
-            guestView.classList.add('hidden');
-        } else {
-            setupView.classList.add('hidden');
-            guestView.classList.remove('hidden');
-        }
-
-        // Host button click handler
         startBtn.addEventListener('click', async () => {
+            showMessage("Generating session code...", 'info');
             try {
                 const response = await fetch('/start-session');
                 const data = await response.json();
                 if (data.uniqueCode) {
                     sessionCodeSpan.textContent = data.uniqueCode;
-                    setupView.classList.add('hidden');
-                    codeView.classList.remove('hidden');
-                    showMessage("Session code generated!", 'success');
+                    showView('code-view');
+                    showMessage("Session code generated! Awaiting guest.", 'success');
                 } else {
                     showMessage("Could not generate a session code. Please try again.", 'error');
                 }
@@ -123,7 +110,6 @@
             }
         });
 
-        // Guest button click handler
         joinBtn.addEventListener('click', () => {
             const code = guestCodeInput.value.trim();
             if (code.length === 6) {
@@ -133,15 +119,12 @@
             }
         });
 
-        // Stop button click handler
         stopBtn.addEventListener('click', () => {
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                mediaRecorder.stop();
+                showMessage("Stopping and saving recording...", 'info');
+                // We send a 'stop' message to the server first
                 ws.send(JSON.stringify({ type: 'stop' }));
-                ws.close();
-                showMessage("Recording stopped and saved.", 'success');
-                recordingView.classList.add('hidden');
-                guestView.classList.remove('hidden'); // Return to guest view
+                // We will close the connection only after the server confirms it has saved the file
             }
         });
 
@@ -154,9 +137,7 @@
 
                 ws.onopen = async () => {
                     console.log('WebSocket connection opened.');
-                    ws.send(JSON.stringify({ type: 'start', code: code }));
-
-                    // Request microphone access
+                    // Request microphone access first
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
@@ -175,11 +156,13 @@
                         }
                     };
 
-                    // Start recording in chunks
+                    // Start recording in chunks. This also sends the initial 'start' message
                     mediaRecorder.start(1000); // 1000ms (1 second) chunks
 
-                    guestView.classList.add('hidden');
-                    recordingView.classList.remove('hidden');
+                    // Send the 'start' message after we know we have a stream
+                    ws.send(JSON.stringify({ type: 'start', code: code }));
+                    
+                    showView('recording-view');
                     showMessage("Connected! Recording has started.", 'success');
                 };
 
@@ -188,10 +171,11 @@
                     if (data.type === 'error') {
                         showMessage(data.message, 'error');
                         ws.close();
-                        recordingView.classList.add('hidden');
-                        guestView.classList.remove('hidden');
-                    } else if (data.type === 'status') {
-                        showMessage(data.message, 'success');
+                        showView('guest-view'); // Go back to the guest view
+                    } else if (data.type === 'recording_saved') {
+                        showMessage("Recording saved successfully! You can now close this window.", 'success');
+                        ws.close();
+                        showView('guest-view'); // Go back to the guest view
                     }
                 };
 
@@ -199,7 +183,9 @@
                     console.log('WebSocket connection closed.');
                     // Don't show an error if the close was initiated by the stop button
                     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                        showMessage("Connection lost. Recording may have failed.", 'error');
+                        showMessage("Connection lost. Please check your network and try again.", 'error');
+                        mediaRecorder.stop();
+                        showView('guest-view');
                     }
                 };
 
@@ -210,7 +196,7 @@
 
             } catch (error) {
                 console.error('Microphone access or WebSocket connection failed:', error);
-                showMessage("Could not access microphone or connect to the server. Please check permissions.", 'error');
+                showMessage("Could not access microphone or connect. Check permissions and code.", 'error');
             }
         }
     </script>
