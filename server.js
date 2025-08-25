@@ -1,108 +1,133 @@
+// server.js
 const express = require('express');
-const http = require('http');
-const WebSocket = require('ws');
-const fs = require('fs');
+const { WebSocketServer } = require('ws');
 const path = require('path');
-const crypto = require('crypto');
+const fs = require('fs');
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
-
-// A map to store active sessions. Key: uniqueCode, Value: WebSocket connection
-const sessions = new Map();
-
-// Serve the index.html file from the root directory
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-// A route for starting a new recording session and generating a code
-app.get('/start-session', (req, res) => {
-    // Generate a new, unique 6-digit code for the session
-    const uniqueCode = crypto.randomInt(100000, 999999).toString();
-    sessions.set(uniqueCode, null); // Store the code, no active connection yet
-    console.log(`New session created with code: ${uniqueCode}`);
-    res.json({ uniqueCode });
-});
-
-wss.on('connection', ws => {
-    console.log('Client connected to WebSocket.');
-
-    let sessionCode = null;
-    let fileStream = null;
-
-    ws.on('message', message => {
-        try {
-            const data = JSON.parse(message);
-
-            if (data.type === 'start') {
-                const { code } = data;
-                console.log(`Received start message with code: ${code}`);
-
-                // Check if the provided code is valid and not already in use
-                if (sessions.has(code) && sessions.get(code) === null) {
-                    sessionCode = code;
-                    sessions.set(sessionCode, ws); // Associate the WebSocket with the code
-                    console.log(`Guest connected with code: ${sessionCode}`);
-
-                    // Create a new file stream for the audio data
-                    const filename = `recording-${sessionCode}.webm`;
-                    const filePath = path.join(__dirname, 'recordings', filename);
-                    console.log(`Creating file stream at: ${filePath}`);
-                    fileStream = fs.createWriteStream(filePath);
-                    ws.send(JSON.stringify({ type: 'status', message: 'Recording started.' }));
-                } else {
-                    console.log(`Invalid or already in-use code: ${code}`);
-                    ws.send(JSON.stringify({ type: 'error', message: 'Invalid or already in-use session code.' }));
-                    ws.close();
-                }
-            } else if (data.type === 'audio' && sessionCode) {
-                // Write the incoming audio data to the file
-                if (fileStream) {
-                    fileStream.write(Buffer.from(data.audioData, 'base64'));
-                }
-            } else if (data.type === 'stop' && sessionCode) {
-                console.log(`Received stop message for session: ${sessionCode}`);
-                // Finalize the file and clean up the session
-                if (fileStream) {
-                    fileStream.end();
-                    console.log(`Recording for session ${sessionCode} saved to disk.`);
-                    ws.send(JSON.stringify({ type: 'recording_saved', message: 'Recording saved successfully.' }));
-                }
-                sessions.delete(sessionCode);
-            }
-        } catch (e) {
-            console.error('Error handling message:', e);
-            ws.send(JSON.stringify({ type: 'error', message: 'An unexpected error occurred.' }));
-        }
-    });
-
-    ws.on('close', () => {
-        console.log('Client disconnected.');
-        // If the connection closes unexpectedly, clean up the file stream
-        if (fileStream && !fileStream.writableEnded) {
-            console.log('Client disconnected unexpectedly. Ending file stream.');
-            fileStream.end();
-        }
-    });
-
-    ws.on('error', error => {
-        console.error('WebSocket error:', error);
-    });
-});
-
-// --- Create the 'recordings' directory if it doesn't exist ---
-const recordingsDir = path.join(__dirname, 'recordings');
-if (!fs.existsSync(recordingsDir)) {
-    fs.mkdirSync(recordingsDir);
-    console.log('Created the "recordings" directory.');
-} else {
-    console.log('The "recordings" directory already exists.');
-}
-
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-    console.log('Use /start-session to create a new code.');
+
+// Serve static files from the 'public' directory
+// This is where your index.html and other client-side assets will be
+app.use(express.static('public'));
+
+// CRITICAL FIX: Serve files from the 'recordings' directory
+// This allows the host's download button to access the saved file
+app.use('/recordings', express.static(path.join(__dirname, 'recordings')));
+
+const server = app.listen(PORT, () => {
+  console.log(`Server is listening on port ${PORT}`);
+});
+
+const wss = new WebSocketServer({ server });
+
+// Map to store WebSocket connections by session code
+const sessions = {};
+
+// Helper function to create a unique 6-digit session code
+const generateSessionCode = () => {
+  let code = '';
+  do {
+    code = Math.floor(100000 + Math.random() * 900000).toString();
+  } while (sessions[code]); // Ensure the code is unique
+  return code;
+};
+
+// Route to handle session code generation
+app.get('/start-session', (req, res) => {
+  const uniqueCode = generateSessionCode();
+  res.json({ uniqueCode });
+});
+
+wss.on('connection', (ws) => {
+  console.log('Client connected');
+
+  // Handle incoming messages from the client
+  ws.on('message', (message) => {
+    const data = JSON.parse(message);
+
+    switch (data.type) {
+      case 'start':
+        // A guest is joining, link their WS to the session
+        if (sessions[data.code]) {
+          sessions[data.code].guest = ws;
+          console.log(`Guest joined session: ${data.code}`);
+        } else {
+          ws.send(JSON.stringify({ type: 'error', message: 'Session not found.' }));
+        }
+        break;
+
+      case 'host_audio':
+        // Host is sending audio data
+        if (!sessions[data.code]) {
+          // New session is being created by the host
+          const fileStream = fs.createWriteStream(path.join(__dirname, 'recordings', `recording-${data.code}.webm`));
+          sessions[data.code] = {
+            host: ws,
+            fileStream: fileStream,
+            code: data.code
+          };
+          console.log(`Host started new session: ${data.code}`);
+          fileStream.write(Buffer.from(data.audioData, 'base64'));
+        } else {
+          // Continue writing to an existing session file
+          sessions[data.code].fileStream.write(Buffer.from(data.audioData, 'base64'));
+        }
+        break;
+
+      case 'guest_audio':
+        // Guest is sending audio data, write it to the host's file
+        if (sessions[data.code] && sessions[data.code].fileStream) {
+          sessions[data.code].fileStream.write(Buffer.from(data.audioData, 'base64'));
+        } else {
+          ws.send(JSON.stringify({ type: 'error', message: 'Session not found or file stream is closed.' }));
+        }
+        break;
+      
+      case 'stop':
+        // A stop message was received from the host
+        if (sessions[data.code]) {
+          console.log(`Stopping recording for session: ${data.code}`);
+
+          // Close the file stream
+          sessions[data.code].fileStream.end();
+          
+          // Notify the host and guest that the recording is saved
+          const downloadUrl = `/recordings/recording-${data.code}.webm`;
+          if (sessions[data.code].host) {
+            sessions[data.code].host.send(JSON.stringify({ type: 'recording_saved', downloadUrl }));
+          }
+          if (sessions[data.code].guest) {
+            sessions[data.code].guest.send(JSON.stringify({ type: 'recording_saved' }));
+          }
+
+          // Clean up the session
+          delete sessions[data.code];
+        }
+        break;
+    }
+  });
+
+  // Handle client disconnection
+  ws.on('close', () => {
+    console.log('Client disconnected.');
+    // Check if this was a host and clean up the session
+    for (const code in sessions) {
+      if (sessions[code].host === ws || sessions[code].guest === ws) {
+        if (sessions[code].fileStream) {
+          console.log(`Client disconnected unexpectedly. Ending file stream for session: ${code}`);
+          sessions[code].fileStream.end();
+
+          // Notify the other participant if they are still connected
+          if (sessions[code].host && sessions[code].host !== ws) {
+            sessions[code].host.send(JSON.stringify({ type: 'recording_saved' }));
+          } else if (sessions[code].guest && sessions[code].guest !== ws) {
+            sessions[code].guest.send(JSON.stringify({ type: 'recording_saved' }));
+          }
+        }
+        delete sessions[code];
+        break;
+      }
+    }
+  });
 });
