@@ -307,12 +307,17 @@
                         type: 'host_connect',
                         code: currentSessionCode,
                     }));
+                    // After the host connects and has microphone access, signal readiness to the server
+                    ws.send(JSON.stringify({
+                        type: 'host_ready',
+                        code: currentSessionCode,
+                    }));
                     
                     showView('recording-view');
                     hostRecordingInfo.classList.remove('hidden');
                     guestRecordingInfo.classList.add('hidden');
                     sessionCodeSpan.textContent = currentSessionCode;
-                    recordingStatusText.textContent = "Waiting for guest...";
+                    recordingStatusText.textContent = "Microphone ready. Waiting for guest...";
                     stopBtn.classList.add('hidden');
                 };
 
@@ -388,11 +393,19 @@
                     console.log('Guest WebSocket connection opened.');
                     currentSessionCode = code; // Store the code
                     ws.send(JSON.stringify({ type: 'guest_connect', code: code }));
+
+                    // Request microphone access here for the guest
+                    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    // After the guest connects and has microphone access, signal readiness to the server
+                    ws.send(JSON.stringify({
+                        type: 'guest_ready',
+                        code: currentSessionCode,
+                    }));
                     
                     showView('recording-view');
                     hostRecordingInfo.classList.add('hidden');
                     guestRecordingInfo.classList.remove('hidden');
-                    guestStatusText.textContent = "Connected! Waiting for the host to start the recording...";
+                    guestStatusText.textContent = "Microphone ready. Waiting for the host to start the recording...";
                     stopBtn.classList.add('hidden');
                 };
 
@@ -413,7 +426,6 @@
                     } else if (data.type === 'start_session') {
                         // Server has sent a signal for a synchronized start
                         guestStatusText.textContent = "Synchronizing...";
-                        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                         synchronizeAndStart(data.startTime, currentSessionCode);
                     }
                 };
