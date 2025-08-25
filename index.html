@@ -337,7 +337,11 @@
                         ws.close();
                         showView('guest-view');
                     } else if (data.type === 'recording_saved') {
-                        showMessage("Recording saved successfully! You can now close this window.", 'success');
+                        // The server sent a message that the recording is saved, so we can stop and reset the guest UI.
+                        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                            mediaRecorder.stop();
+                        }
+                        showMessage("Recording saved successfully! The session has ended.", 'success');
                         ws.close();
                         showView('guest-view');
                     }
