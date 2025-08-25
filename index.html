@@ -82,7 +82,7 @@
 
     </div>
 
-    <script>
+    <script defer>
         // DOM Elements
         const roleSelectView = document.getElementById('role-select-view');
         const hostView = document.getElementById('host-view');
@@ -111,7 +111,12 @@
         const showView = (viewId) => {
             const views = [roleSelectView, hostView, guestView, codeView, recordingView];
             views.forEach(view => view.classList.add('hidden'));
-            document.getElementById(viewId).classList.remove('hidden');
+            const viewToShow = document.getElementById(viewId);
+            if (viewToShow) {
+                viewToShow.classList.remove('hidden');
+            } else {
+                console.error(`Attempted to show a non-existent view: ${viewId}`);
+            }
         };
 
         const showMessage = (message, type = 'info') => {
@@ -136,7 +141,16 @@
         // --- Event Listeners ---
         // Initial view setup
         document.addEventListener('DOMContentLoaded', () => {
-            showView('role-select-view');
+            console.log('DOM Content Loaded. Initializing view.');
+            try {
+                if (roleSelectView) {
+                    showView('role-select-view');
+                } else {
+                    console.error('Initial view element not found. UI may be broken.');
+                }
+            } catch (e) {
+                console.error('Error in DOMContentLoaded handler:', e);
+            }
         });
 
         hostSelectBtn.addEventListener('click', () => showView('host-view'));
