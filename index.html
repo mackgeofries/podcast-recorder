@@ -337,13 +337,14 @@
                         ws.close();
                         showView('guest-view');
                     } else if (data.type === 'recording_saved') {
-                        // The server sent a message that the recording is saved, so we can stop and reset the guest UI.
+                        // When the host stops the recording, this message is sent to the guest.
                         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                             mediaRecorder.stop();
                         }
-                        showMessage("Recording saved successfully! The session has ended.", 'success');
+                        guestStatusText.textContent = "The host has ended the session. You may now close this window.";
+                        stopBtn.classList.add('hidden');
                         ws.close();
-                        showView('guest-view');
+                        showMessage("Recording saved successfully! The session has ended.", 'success');
                     }
                 };
 
