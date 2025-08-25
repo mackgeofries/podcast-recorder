@@ -183,34 +183,35 @@
                 // Get microphone audio stream
                 const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-                // Create an AudioContext and destination
+                // Create a new AudioContext
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                const micSource = audioContext.createMediaStreamSource(micStream);
-                const destination = audioContext.createMediaStreamDestination();
 
                 // Create the sync tone oscillator
                 const oscillator = audioContext.createOscillator();
                 oscillator.type = 'sine';
                 oscillator.frequency.setValueAtTime(1000, audioContext.currentTime); // A 1000 Hz tone for a clear spike
                 
-                // Create a gain node to control the tone's volume
-                const toneGain = audioContext.createGain();
-                toneGain.gain.setValueAtTime(1, audioContext.currentTime); // Set high volume
-                oscillator.connect(toneGain);
-                
-                // Connect the microphone and the tone to the destination
-                micSource.connect(destination);
-                toneGain.connect(destination);
+                // Create a destination for the oscillator stream
+                const toneDestination = audioContext.createMediaStreamDestination();
+                oscillator.connect(toneDestination);
 
-                // Stop the tone and reduce gain after 0.5 seconds
+                // Start the oscillator
+                oscillator.start();
+                
+                // Stop the tone after 0.5 seconds
                 setTimeout(() => {
-                    toneGain.gain.setValueAtTime(0.01, audioContext.currentTime);
                     oscillator.stop();
                     oscillator.disconnect();
                 }, 500);
 
-                // Create a new stream from the destination node
-                const combinedStream = destination.stream;
+                // Combine the microphone track and the tone track into a single stream
+                const combinedStream = new MediaStream();
+                
+                // Add the microphone's audio track
+                micStream.getAudioTracks().forEach(track => combinedStream.addTrack(track));
+                
+                // Add the tone's audio track
+                toneDestination.stream.getAudioTracks().forEach(track => combinedStream.addTrack(track));
 
                 mediaRecorder = new MediaRecorder(combinedStream, { mimeType: 'audio/webm' });
 
