@@ -178,12 +178,31 @@
             }
         });
 
-        // --- Start Recording Function (now includes sync tone generation) ---
-        const startRecording = async (code) => {
+        // --- Synchronized Start and Recording Logic ---
+        const synchronizeAndStart = (startTime, code) => {
+            // Calculate the delay until the server-provided start time
+            const now = Date.now();
+            const delay = startTime - now;
+
+            // Use setTimeout to wait for the synchronized start time
+            setTimeout(() => {
+                console.log("Synchronized start triggered. Starting recording.");
+                startRecording(code);
+                if (isHost) {
+                    recordingStatusText.textContent = "You are recording!";
+                    stopBtn.classList.remove('hidden');
+                } else {
+                    guestStatusText.textContent = "You are recording! The host will end the session.";
+                }
+            }, delay);
+        };
+
+        const startRecording = (code) => {
             try {
-                // If mic stream is not already available, get it now (for guest)
+                // Mic stream should already be available at this point
                 if (!micStream) {
-                    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    showMessage("Microphone stream is not available.", 'error');
+                    return;
                 }
 
                 // Create a new AudioContext
@@ -207,15 +226,12 @@
                 const destination = audioContext.createMediaStreamDestination();
                 gainNode.connect(destination);
 
-                // Play the tone after a 500ms delay for a cleaner start
+                // Play the tone for a short burst at the very beginning
+                toneSource.start();
                 setTimeout(() => {
-                    toneSource.start();
-                    // Stop the tone after 500ms
-                    setTimeout(() => {
-                        toneSource.stop();
-                        toneSource.disconnect();
-                        console.log('Sync tone played and stopped.');
-                    }, 500);
+                    toneSource.stop();
+                    toneSource.disconnect();
+                    console.log('Sync tone played and stopped.');
                 }, 500);
 
                 // Create a new stream from the destination node
@@ -269,7 +285,7 @@
         startBtn.addEventListener('click', async () => {
             showMessage("Please allow microphone access...", 'info');
             try {
-                // Request microphone access here for the host
+                // Request microphone access here for the host immediately
                 micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 
                 showMessage("Generating session code...", 'info');
@@ -319,10 +335,10 @@
                         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                             mediaRecorder.stop();
                         }
-                    } else if (data.type === 'recording_started') {
-                        recordingStatusText.textContent = "You are recording!";
-                        stopBtn.classList.remove('hidden');
-                        startRecording(currentSessionCode);
+                    } else if (data.type === 'start_session') {
+                        // Server has sent a signal for a synchronized start
+                        recordingStatusText.textContent = "Synchronizing...";
+                        synchronizeAndStart(data.startTime, currentSessionCode);
                     }
                 };
 
@@ -371,7 +387,7 @@
                 ws.onopen = async () => {
                     console.log('Guest WebSocket connection opened.');
                     currentSessionCode = code; // Store the code
-                    ws.send(JSON.stringify({ type: 'start', code: code }));
+                    ws.send(JSON.stringify({ type: 'guest_connect', code: code }));
                     
                     showView('recording-view');
                     hostRecordingInfo.classList.add('hidden');
@@ -380,7 +396,7 @@
                     stopBtn.classList.add('hidden');
                 };
 
-                ws.onmessage = event => {
+                ws.onmessage = async event => {
                     const data = JSON.parse(event.data);
                     if (data.type === 'error') {
                         showMessage(data.message, 'error');
@@ -394,9 +410,11 @@
                         stopBtn.classList.add('hidden');
                         ws.close();
                         showMessage("Recording saved successfully! The session has ended.", 'success');
-                    } else if (data.type === 'recording_started') {
-                        guestStatusText.textContent = "You are recording! The host will end the session.";
-                        startRecording(currentSessionCode);
+                    } else if (data.type === 'start_session') {
+                        // Server has sent a signal for a synchronized start
+                        guestStatusText.textContent = "Synchronizing...";
+                        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        synchronizeAndStart(data.startTime, currentSessionCode);
                     }
                 };
 
