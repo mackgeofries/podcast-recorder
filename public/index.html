@@ -177,6 +177,38 @@
             }
         });
 
+        // --- Start Recording Function ---
+        const startRecording = async (code) => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+                mediaRecorder.ondataavailable = event => {
+                    if (event.data.size > 0) {
+                        const reader = new FileReader();
+                        reader.readAsDataURL(event.data);
+                        reader.onloadend = () => {
+                            const base64Audio = reader.result.split(',')[1];
+                            const audioType = isHost ? 'host_audio' : 'guest_audio';
+                            ws.send(JSON.stringify({
+                                type: audioType,
+                                code: code,
+                                audioData: base64Audio
+                            }));
+                        };
+                    }
+                };
+
+                mediaRecorder.start(1000);
+                requestWakeLock();
+                console.log('Recording started.');
+
+            } catch (error) {
+                console.error('Microphone access failed:', error);
+                showMessage("Could not access microphone. Check permissions.", 'error');
+            }
+        };
+
         // --- Event Listeners ---
         document.addEventListener('DOMContentLoaded', () => {
             showView('role-select-view');
@@ -206,57 +238,33 @@
                 }
                 
                 currentSessionCode = data.uniqueCode;
-
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-
                 const wsUrl = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}`;
                 ws = new WebSocket(wsUrl);
 
                 ws.onopen = () => {
                     console.log('Host WebSocket connection opened.');
-                    // Send the initial audio data with the session code
                     ws.send(JSON.stringify({
-                        type: 'host_audio',
+                        type: 'host_connect',
                         code: currentSessionCode,
-                        audioData: '' // Send an empty chunk to initialize the stream
                     }));
-                    
-                    mediaRecorder.ondataavailable = event => {
-                        if (event.data.size > 0) {
-                            const reader = new FileReader();
-                            reader.readAsDataURL(event.data);
-                            reader.onloadend = () => {
-                                const base64Audio = reader.result.split(',')[1];
-                                ws.send(JSON.stringify({
-                                    type: 'host_audio',
-                                    code: currentSessionCode,
-                                    audioData: base64Audio
-                                }));
-                            };
-                        }
-                    };
-
-                    mediaRecorder.start(1000);
                     
                     showView('recording-view');
                     hostRecordingInfo.classList.remove('hidden');
                     guestRecordingInfo.classList.add('hidden');
                     sessionCodeSpan.textContent = currentSessionCode;
-                    recordingStatusText.textContent = "You are recording! Awaiting guest...";
-                    stopBtn.classList.remove('hidden');
-                    requestWakeLock();
+                    recordingStatusText.textContent = "Waiting for guest...";
+                    stopBtn.classList.add('hidden');
                 };
 
                 ws.onmessage = event => {
                     const data = JSON.parse(event.data);
                     if (data.type === 'recording_saved') {
-                        downloadArea.innerHTML = ''; // Clear previous links
+                        downloadArea.innerHTML = '';
                         data.downloadUrls.forEach(url => {
                             const a = document.createElement('a');
                             const filename = url.split('/').pop().replace('.webm', '.ogg');
                             a.href = url;
-                            a.download = filename; // Force download with this attribute
+                            a.download = filename;
                             a.textContent = `Download ${filename}`;
                             a.className = "inline-block w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200";
                             downloadArea.appendChild(a);
@@ -264,7 +272,13 @@
                         downloadArea.classList.remove('hidden');
                         showMessage("Recording saved successfully! Download your files below.", 'success');
                         stopBtn.classList.add('hidden');
-                        mediaRecorder.stop();
+                        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                            mediaRecorder.stop();
+                        }
+                    } else if (data.type === 'recording_started') {
+                        recordingStatusText.textContent = "You are recording!";
+                        stopBtn.classList.remove('hidden');
+                        startRecording(currentSessionCode);
                     }
                 };
 
@@ -282,8 +296,8 @@
                     releaseWakeLock();
                 };
             } catch (error) {
-                console.error('Microphone access or WebSocket connection failed:', error);
-                showMessage("Could not access microphone or connect. Check permissions.", 'error');
+                console.error('WebSocket connection failed:', error);
+                showMessage("Could not connect to server.", 'error');
             }
         });
 
@@ -312,33 +326,14 @@
 
                 ws.onopen = async () => {
                     console.log('Guest WebSocket connection opened.');
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-
-                    mediaRecorder.ondataavailable = event => {
-                        if (event.data.size > 0) {
-                            const reader = new FileReader();
-                            reader.readAsDataURL(event.data);
-                            reader.onloadend = () => {
-                                const base64Audio = reader.result.split(',')[1];
-                                ws.send(JSON.stringify({
-                                    type: 'guest_audio',
-                                    code: code,
-                                    audioData: base64Audio
-                                }));
-                            };
-                        }
-                    };
-
-                    mediaRecorder.start(1000);
+                    currentSessionCode = code; // Store the code
                     ws.send(JSON.stringify({ type: 'start', code: code }));
                     
                     showView('recording-view');
                     hostRecordingInfo.classList.add('hidden');
                     guestRecordingInfo.classList.remove('hidden');
-                    guestStatusText.textContent = "You are recording! The host will end the session.";
+                    guestStatusText.textContent = "Connected! Waiting for the host to start the recording...";
                     stopBtn.classList.add('hidden');
-                    requestWakeLock();
                 };
 
                 ws.onmessage = event => {
@@ -355,6 +350,9 @@
                         stopBtn.classList.add('hidden');
                         ws.close();
                         showMessage("Recording saved successfully! The session has ended.", 'success');
+                    } else if (data.type === 'recording_started') {
+                        guestStatusText.textContent = "You are recording! The host will end the session.";
+                        startRecording(currentSessionCode);
                     }
                 };
 

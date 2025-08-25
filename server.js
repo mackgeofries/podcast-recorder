@@ -27,7 +27,6 @@ const server = app.listen(PORT, () => {
 const wss = new WebSocketServer({ server });
 
 // Map to store WebSocket connections and file streams by session code
-// Changed to handle multiple file streams per session
 const sessions = {};
 
 // Helper function to create a unique 6-digit session code
@@ -69,38 +68,49 @@ wss.on('connection', (ws) => {
     }
 
     switch (data.type) {
+      case 'host_connect':
+        session.host = ws;
+        console.log(`Host connected to session: ${data.code}`);
+        break;
+
       case 'start':
-        // A guest is joining, link their WS to the session
+        // Guest is joining, link their WS to the session
         session.guest = ws;
         console.log(`Guest joined session: ${data.code}`);
+        
+        // Broadcast the start command to both host and guest
+        if (session.host) {
+          session.host.send(JSON.stringify({ type: 'recording_started' }));
+        }
+        if (session.guest) {
+          session.guest.send(JSON.stringify({ type: 'recording_started' }));
+        }
+
+        // Initialize file streams for both participants
+        if (!session.hostStream) {
+          const hostFile = path.join(recordingsDir, `recording-${data.code}-host.webm`);
+          session.hostStream = fs.createWriteStream(hostFile);
+          console.log(`Host file stream created for session: ${data.code}`);
+        }
+        if (!session.guestStream) {
+          const guestFile = path.join(recordingsDir, `recording-${data.code}-guest.webm`);
+          session.guestStream = fs.createWriteStream(guestFile);
+          console.log(`Guest file stream created for session: ${data.code}`);
+        }
         break;
 
       case 'host_audio':
         // Host is sending audio data
-        // If this is the first audio chunk from the host, create the file stream
-        if (!session.hostStream) {
-          const hostFile = path.join(recordingsDir, `recording-${data.code}-host.webm`);
-          const hostStream = fs.createWriteStream(hostFile);
-          session.hostStream = hostStream;
-          session.host = ws;
-          console.log(`Host connected to session: ${data.code} and file stream created.`);
+        if (session.hostStream) {
+          session.hostStream.write(Buffer.from(data.audioData, 'base64'));
         }
-        // Write the audio data to the host's file stream
-        session.hostStream.write(Buffer.from(data.audioData, 'base64'));
         break;
 
       case 'guest_audio':
         // Guest is sending audio data, write it to their own file stream
-        // This is a simple implementation for one guest.
-        // For multiple guests, this would need to handle a dynamic number of streams.
-        if (!session.guestStream) {
-          const guestFile = path.join(recordingsDir, `recording-${data.code}-guest.webm`);
-          const guestStream = fs.createWriteStream(guestFile);
-          session.guestStream = guestStream;
-          console.log(`Guest connected to session: ${data.code} and file stream created.`);
+        if (session.guestStream) {
+          session.guestStream.write(Buffer.from(data.audioData, 'base64'));
         }
-        // Write the audio data to the guest's file stream
-        session.guestStream.write(Buffer.from(data.audioData, 'base64'));
         break;
       
       case 'stop':
@@ -147,11 +157,11 @@ wss.on('connection', (ws) => {
       if (sessions[code].host === ws || sessions[code].guest === ws) {
         // Find which stream to end
         let streamToEnd = null;
-        if (sessions[code].host === ws && sessions[code].hostStream) {
+        if (sessions[code].host === ws) {
           console.log(`Host disconnected unexpectedly. Ending file stream for session: ${code}`);
           streamToEnd = sessions[code].hostStream;
           sessions[code].hostStream = null;
-        } else if (sessions[code].guest === ws && sessions[code].guestStream) {
+        } else if (sessions[code].guest === ws) {
           console.log(`Guest disconnected unexpectedly. Ending file stream for session: ${code}`);
           streamToEnd = sessions[code].guestStream;
           sessions[code].guestStream = null;
