@@ -285,7 +285,6 @@
         startBtn.addEventListener('click', async () => {
             showMessage("Please allow microphone access...", 'info');
             try {
-                // Request microphone access here for the host immediately
                 micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 
                 showMessage("Generating session code...", 'info');
@@ -366,10 +365,10 @@
             }
         });
 
-        joinBtn.addEventListener('click', () => {
+        joinBtn.addEventListener('click', async () => {
             const code = guestCodeInput.value.trim();
             if (code.length === 6) {
-                connectAndRecord(code);
+                await connectAndRecord(code);
             } else {
                 showMessage("Please enter a valid 6-digit code.", 'error');
             }
