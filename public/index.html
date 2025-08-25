@@ -177,35 +177,42 @@
             }
         });
 
-        // --- Audio Context for generating sync tone ---
-        let audioContext;
-        let oscillator;
-        const playSyncTone = () => {
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            // Create a low-frequency oscillator for the tone
-            oscillator = audioContext.createOscillator();
-            oscillator.type = 'sine'; // Can be 'sine', 'square', 'sawtooth', 'triangle'
-            oscillator.frequency.setValueAtTime(440, audioContext.currentTime); // 440 Hz is a standard tone
-            
-            // Connect to destination (speakers)
-            oscillator.connect(audioContext.destination);
-            
-            // Start the tone
-            oscillator.start();
-            
-            // Stop the tone after 0.5 seconds
-            setTimeout(() => {
-                oscillator.stop();
-            }, 500);
-        };
-
-        // --- Start Recording Function ---
+        // --- Start Recording Function (now includes sync tone generation) ---
         const startRecording = async (code) => {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                // Get microphone audio stream
+                const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                // Create an AudioContext and destination
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const micSource = audioContext.createMediaStreamSource(micStream);
+                const destination = audioContext.createMediaStreamDestination();
+
+                // Create the sync tone oscillator
+                const oscillator = audioContext.createOscillator();
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(1000, audioContext.currentTime); // A 1000 Hz tone for a clear spike
+                
+                // Create a gain node to control the tone's volume
+                const toneGain = audioContext.createGain();
+                toneGain.gain.setValueAtTime(1, audioContext.currentTime); // Set high volume
+                oscillator.connect(toneGain);
+                
+                // Connect the microphone and the tone to the destination
+                micSource.connect(destination);
+                toneGain.connect(destination);
+
+                // Stop the tone and reduce gain after 0.5 seconds
+                setTimeout(() => {
+                    toneGain.gain.setValueAtTime(0.01, audioContext.currentTime);
+                    oscillator.stop();
+                    oscillator.disconnect();
+                }, 500);
+
+                // Create a new stream from the destination node
+                const combinedStream = destination.stream;
+
+                mediaRecorder = new MediaRecorder(combinedStream, { mimeType: 'audio/webm' });
 
                 mediaRecorder.ondataavailable = event => {
                     if (event.data.size > 0) {
@@ -300,8 +307,6 @@
                             mediaRecorder.stop();
                         }
                     } else if (data.type === 'recording_started') {
-                        // Play the sync tone right before recording starts
-                        playSyncTone();
                         recordingStatusText.textContent = "You are recording!";
                         stopBtn.classList.remove('hidden');
                         startRecording(currentSessionCode);
@@ -377,8 +382,6 @@
                         ws.close();
                         showMessage("Recording saved successfully! The session has ended.", 'success');
                     } else if (data.type === 'recording_started') {
-                        // Play the sync tone right before recording starts
-                        playSyncTone();
                         guestStatusText.textContent = "You are recording! The host will end the session.";
                         startRecording(currentSessionCode);
                     }
