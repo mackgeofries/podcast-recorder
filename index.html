@@ -69,12 +69,17 @@
         </div>
 
         <div id="recording-view" class="hidden space-y-4">
-            <p class="text-lg text-green-400">You are connected and recording!</p>
-            <p class="text-sm text-gray-400">Your audio is being sent to the host's server. Do not close this window.</p>
+            <p id="recording-status-text" class="text-lg text-green-400"></p>
+            <p class="text-sm text-gray-400">Your audio is being sent to the server. Do not close this window.</p>
             <div class="mt-4">
-                <button id="stop-btn" class="w-full px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200">
+                <button id="stop-btn" class="w-full px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200 hidden">
                     Stop Recording
                 </button>
+                <div id="download-area" class="mt-4 hidden">
+                    <a id="download-link" href="#" class="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200">
+                        Download Your Recording
+                    </a>
+                </div>
             </div>
         </div>
         
@@ -89,12 +94,15 @@
         const guestView = document.getElementById('guest-view');
         const codeView = document.getElementById('code-view');
         const recordingView = document.getElementById('recording-view');
+        const recordingStatusText = document.getElementById('recording-status-text');
+        const stopBtn = document.getElementById('stop-btn');
+        const downloadArea = document.getElementById('download-area');
+        const downloadLink = document.getElementById('download-link');
 
         const hostSelectBtn = document.getElementById('host-select-btn');
         const guestSelectBtn = document.getElementById('guest-select-btn');
         const startBtn = document.getElementById('start-btn');
         const joinBtn = document.getElementById('join-btn');
-        const stopBtn = document.getElementById('stop-btn');
         const backToStartBtnHost = document.getElementById('back-to-start-btn');
         const backToStartBtnGuest = document.getElementById('back-to-start-btn-guest');
 
@@ -105,9 +113,9 @@
         // State variables
         let ws;
         let mediaRecorder;
+        let wakeLock = null;
 
         // --- UI State Management Functions ---
-        // This function hides all views and then shows the specified one
         const showView = (viewId) => {
             const views = [roleSelectView, hostView, guestView, codeView, recordingView];
             views.forEach(view => view.classList.add('hidden'));
@@ -132,25 +140,47 @@
                 messageBox.classList.add('bg-blue-500', 'text-white');
             }
             
-            // Hide message after 5 seconds
             setTimeout(() => {
                 messageBox.classList.add('hidden');
             }, 5000);
         };
 
-        // --- Event Listeners ---
-        // Initial view setup
-        document.addEventListener('DOMContentLoaded', () => {
-            console.log('DOM Content Loaded. Initializing view.');
-            try {
-                if (roleSelectView) {
-                    showView('role-select-view');
-                } else {
-                    console.error('Initial view element not found. UI may be broken.');
+        // --- Wake Lock API for preventing screen sleep ---
+        const requestWakeLock = async () => {
+            if ('wakeLock' in navigator) {
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    console.log('Wake lock active!');
+                } catch (err) {
+                    console.error('Failed to get wake lock:', err);
                 }
-            } catch (e) {
-                console.error('Error in DOMContentLoaded handler:', e);
             }
+        };
+
+        const releaseWakeLock = () => {
+            if (wakeLock) {
+                wakeLock.release()
+                    .then(() => {
+                        console.log('Wake lock released.');
+                        wakeLock = null;
+                    })
+                    .catch(err => {
+                        console.error('Failed to release wake lock:', err);
+                    });
+            }
+        };
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && recordingView.classList.contains('hidden') === false) {
+                requestWakeLock();
+            } else {
+                releaseWakeLock();
+            }
+        });
+
+        // --- Event Listeners ---
+        document.addEventListener('DOMContentLoaded', () => {
+            showView('role-select-view');
         });
 
         hostSelectBtn.addEventListener('click', () => showView('host-view'));
@@ -161,18 +191,14 @@
         startBtn.addEventListener('click', async () => {
             showMessage("Generating session code...", 'info');
             try {
-                // Get microphone access for the host
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
-                // Connect to WebSocket and start recording
                 const wsUrl = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}`;
                 ws = new WebSocket(wsUrl);
 
                 ws.onopen = async () => {
                     console.log('Host WebSocket connection opened.');
-
-                    // Request a unique session code from the server
                     const response = await fetch('/start-session');
                     const data = await response.json();
                     
@@ -181,7 +207,6 @@
                         showView('code-view');
                         showMessage("Session code generated! Awaiting guest.", 'success');
 
-                        // Start sending audio data to the server
                         mediaRecorder.ondataavailable = event => {
                             if (event.data.size > 0) {
                                 const reader = new FileReader();
@@ -196,30 +221,31 @@
                                 };
                             }
                         };
-                        mediaRecorder.start(1000); // Record in 1-second chunks
+                        mediaRecorder.start(1000);
+                        
+                        showView('recording-view');
+                        recordingStatusText.textContent = "You are recording! Awaiting guest...";
+                        stopBtn.classList.remove('hidden');
+                        requestWakeLock();
                     } else {
                         showMessage("Could not generate a session code. Please try again.", 'error');
-                        ws.close(); // Close the WebSocket if we can't get a code
+                        ws.close();
                     }
                 };
 
                 ws.onclose = () => {
-                    console.log('WebSocket connection closed.');
-                    if (mediaRecorder) {
+                    console.log('Host WebSocket connection closed.');
+                    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                         mediaRecorder.stop();
                     }
-                    showMessage("Connection lost. Please check your network and try again.", 'error');
-                    showView('host-view'); // Return to the host view
+                    releaseWakeLock();
                 };
 
                 ws.onerror = error => {
-                    console.error('WebSocket error:', error);
+                    console.error('Host WebSocket error:', error);
                     showMessage("An error occurred with the connection.", 'error');
-                    if (mediaRecorder) {
-                        mediaRecorder.stop();
-                    }
+                    releaseWakeLock();
                 };
-
             } catch (error) {
                 console.error('Microphone access or WebSocket connection failed:', error);
                 showMessage("Could not access microphone or connect. Check permissions.", 'error');
@@ -238,28 +264,23 @@
         stopBtn.addEventListener('click', () => {
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                 showMessage("Stopping and saving recording...", 'info');
-                // We send a 'stop' message to the server first
                 ws.send(JSON.stringify({ type: 'stop' }));
-                // We will close the connection only after the server confirms it has saved the file
             }
         });
 
         async function connectAndRecord(code) {
             showMessage("Connecting to server...", 'info');
             try {
-                // Determine the correct WebSocket URL
                 const wsUrl = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}`;
                 ws = new WebSocket(wsUrl);
 
                 ws.onopen = async () => {
                     console.log('Guest WebSocket connection opened.');
-                    // Request microphone access first
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
                     mediaRecorder.ondataavailable = event => {
                         if (event.data.size > 0) {
-                            // Convert the Blob to a base64 string and send it
                             const reader = new FileReader();
                             reader.readAsDataURL(event.data);
                             reader.onloadend = () => {
@@ -273,14 +294,13 @@
                         }
                     };
 
-                    // Start recording in chunks. This also sends the initial 'start' message
-                    mediaRecorder.start(1000); // 1000ms (1 second) chunks
-
-                    // Send the 'start' message after we know we have a stream
+                    mediaRecorder.start(1000);
                     ws.send(JSON.stringify({ type: 'start', code: code }));
                     
                     showView('recording-view');
-                    showMessage("Connected! Recording has started.", 'success');
+                    recordingStatusText.textContent = "You are recording! The host will end the session.";
+                    stopBtn.classList.add('hidden');
+                    requestWakeLock();
                 };
 
                 ws.onmessage = event => {
@@ -288,29 +308,27 @@
                     if (data.type === 'error') {
                         showMessage(data.message, 'error');
                         ws.close();
-                        showView('guest-view'); // Go back to the guest view
+                        showView('guest-view');
                     } else if (data.type === 'recording_saved') {
                         showMessage("Recording saved successfully! You can now close this window.", 'success');
                         ws.close();
-                        showView('guest-view'); // Go back to the guest view
-                    }
-                };
-
-                ws.onclose = () => {
-                    console.log('WebSocket connection closed.');
-                    // Don't show an error if the close was initiated by the stop button
-                    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                        showMessage("Connection lost. Please check your network and try again.", 'error');
-                        mediaRecorder.stop();
                         showView('guest-view');
                     }
                 };
 
-                ws.onerror = error => {
-                    console.error('WebSocket error:', error);
-                    showMessage("An error occurred with the connection.", 'error');
+                ws.onclose = () => {
+                    console.log('Guest WebSocket connection closed.');
+                    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                        mediaRecorder.stop();
+                    }
+                    releaseWakeLock();
                 };
 
+                ws.onerror = error => {
+                    console.error('Guest WebSocket error:', error);
+                    showMessage("An error occurred with the connection.", 'error');
+                    releaseWakeLock();
+                };
             } catch (error) {
                 console.error('Microphone access or WebSocket connection failed:', error);
                 showMessage("Could not access microphone or connect. Check permissions and code.", 'error');
