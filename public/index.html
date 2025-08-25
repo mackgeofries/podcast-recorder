@@ -74,10 +74,8 @@
                 <button id="stop-btn" class="w-full px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200 hidden">
                     Stop Recording
                 </button>
-                <div id="download-area" class="mt-4 hidden">
-                    <a id="download-link" href="#" class="inline-block px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200">
-                        Download Your Recording
-                    </a>
+                <div id="download-area" class="mt-4 hidden space-y-2">
+                    <!-- Download links will be dynamically added here -->
                 </div>
             </div>
         </div>
@@ -98,7 +96,6 @@
         const guestStatusText = document.getElementById('guest-status-text');
         const stopBtn = document.getElementById('stop-btn');
         const downloadArea = document.getElementById('download-area');
-        const downloadLink = document.getElementById('download-link');
 
         const hostSelectBtn = document.getElementById('host-select-btn');
         const guestSelectBtn = document.getElementById('guest-select-btn');
@@ -200,7 +197,6 @@
         startBtn.addEventListener('click', async () => {
             showMessage("Generating session code...", 'info');
             try {
-                // First, fetch the session code
                 const response = await fetch('/start-session');
                 const data = await response.json();
 
@@ -211,7 +207,6 @@
                 
                 currentSessionCode = data.uniqueCode;
 
-                // Then, get microphone access and start recording
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
@@ -220,6 +215,12 @@
 
                 ws.onopen = () => {
                     console.log('Host WebSocket connection opened.');
+                    // Send the initial audio data with the session code
+                    ws.send(JSON.stringify({
+                        type: 'host_audio',
+                        code: currentSessionCode,
+                        audioData: '' // Send an empty chunk to initialize the stream
+                    }));
                     
                     mediaRecorder.ondataavailable = event => {
                         if (event.data.size > 0) {
@@ -238,7 +239,6 @@
 
                     mediaRecorder.start(1000);
                     
-                    // Show combined host recording view
                     showView('recording-view');
                     hostRecordingInfo.classList.remove('hidden');
                     guestRecordingInfo.classList.add('hidden');
@@ -251,10 +251,20 @@
                 ws.onmessage = event => {
                     const data = JSON.parse(event.data);
                     if (data.type === 'recording_saved') {
-                        // This should now happen for the guest.
-                        showMessage("Recording saved successfully! The session has ended.", 'success');
-                        ws.close();
-                        showView('guest-view'); // Reset guest view
+                        downloadArea.innerHTML = ''; // Clear previous links
+                        data.downloadUrls.forEach(url => {
+                            const a = document.createElement('a');
+                            const filename = url.split('/').pop().replace('.webm', '.ogg');
+                            a.href = url;
+                            a.download = filename; // Force download with this attribute
+                            a.textContent = `Download ${filename}`;
+                            a.className = "inline-block w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-md transition-all duration-200";
+                            downloadArea.appendChild(a);
+                        });
+                        downloadArea.classList.remove('hidden');
+                        showMessage("Recording saved successfully! Download your files below.", 'success');
+                        stopBtn.classList.add('hidden');
+                        mediaRecorder.stop();
                     }
                 };
 
@@ -288,15 +298,8 @@
 
         stopBtn.addEventListener('click', () => {
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                // Send the stop command and immediately stop the local recording
                 showMessage("Stopping and saving recording...", 'info');
-                ws.send(JSON.stringify({ type: 'stop' }));
-                mediaRecorder.stop();
-                ws.close(); // Force a disconnect to trigger server-side saving
-
-                // Show the download link immediately, as we're not waiting for server confirmation
-                downloadLink.href = `/recordings/recording-${currentSessionCode}.webm`;
-                downloadArea.classList.remove('hidden');
+                ws.send(JSON.stringify({ type: 'stop', code: currentSessionCode }));
                 stopBtn.classList.add('hidden');
             }
         });
@@ -345,7 +348,6 @@
                         ws.close();
                         showView('guest-view');
                     } else if (data.type === 'recording_saved') {
-                        // When the host stops the recording, this message is sent to the guest.
                         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                             mediaRecorder.stop();
                         }

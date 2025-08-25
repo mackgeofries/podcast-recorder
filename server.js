@@ -4,7 +4,7 @@ const { WebSocketServer } = require('ws');
 const path = require('path');
 const fs = require('fs');
 
-// CRITICAL FIX: Ensure the recordings directory exists before starting the server
+// Ensure the recordings directory exists before starting the server
 const recordingsDir = path.join(__dirname, 'recordings');
 if (!fs.existsSync(recordingsDir)) {
   fs.mkdirSync(recordingsDir);
@@ -27,6 +27,7 @@ const server = app.listen(PORT, () => {
 const wss = new WebSocketServer({ server });
 
 // Map to store WebSocket connections and file streams by session code
+// Changed to handle multiple file streams per session
 const sessions = {};
 
 // Helper function to create a unique 6-digit session code
@@ -34,18 +35,19 @@ const generateSessionCode = () => {
   let code = '';
   do {
     code = Math.floor(100000 + Math.random() * 900000).toString();
-  } while (sessions[code]); // Ensure the code is unique
+  } while (sessions[code]);
   return code;
 };
 
 // Route to handle session code generation and session creation
 app.get('/start-session', (req, res) => {
   const uniqueCode = generateSessionCode();
-  // CRITICAL FIX: Create the session object immediately when the code is generated
+  // Create the session object immediately with empty streams
   sessions[uniqueCode] = {
     host: null,
     guest: null,
-    fileStream: null,
+    hostStream: null,
+    guestStream: null,
     code: uniqueCode
   };
   console.log(`New session created with code: ${uniqueCode}`);
@@ -59,64 +61,80 @@ wss.on('connection', (ws) => {
   ws.on('message', (message) => {
     const data = JSON.parse(message);
 
+    // Get the session object using the provided code
+    const session = sessions[data.code];
+    if (!session) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Session not found.' }));
+      return;
+    }
+
     switch (data.type) {
       case 'start':
         // A guest is joining, link their WS to the session
-        if (sessions[data.code]) {
-          sessions[data.code].guest = ws;
-          console.log(`Guest joined session: ${data.code}`);
-        } else {
-          ws.send(JSON.stringify({ type: 'error', message: 'Session not found.' }));
-        }
+        session.guest = ws;
+        console.log(`Guest joined session: ${data.code}`);
         break;
 
       case 'host_audio':
         // Host is sending audio data
-        if (sessions[data.code]) {
-          // If this is the first audio chunk from the host, create the file stream
-          if (!sessions[data.code].fileStream) {
-            const fileStream = fs.createWriteStream(path.join(recordingsDir, `recording-${data.code}.webm`));
-            sessions[data.code].fileStream = fileStream;
-            sessions[data.code].host = ws;
-            console.log(`Host connected to session: ${data.code}`);
-          }
-          // Write the audio data to the file stream
-          sessions[data.code].fileStream.write(Buffer.from(data.audioData, 'base64'));
+        // If this is the first audio chunk from the host, create the file stream
+        if (!session.hostStream) {
+          const hostFile = path.join(recordingsDir, `recording-${data.code}-host.webm`);
+          const hostStream = fs.createWriteStream(hostFile);
+          session.hostStream = hostStream;
+          session.host = ws;
+          console.log(`Host connected to session: ${data.code} and file stream created.`);
         }
+        // Write the audio data to the host's file stream
+        session.hostStream.write(Buffer.from(data.audioData, 'base64'));
         break;
 
       case 'guest_audio':
-        // Guest is sending audio data, write it to the host's file
-        if (sessions[data.code] && sessions[data.code].fileStream) {
-          sessions[data.code].fileStream.write(Buffer.from(data.audioData, 'base64'));
-        } else {
-          ws.send(JSON.stringify({ type: 'error', message: 'Session not found or file stream is closed.' }));
+        // Guest is sending audio data, write it to their own file stream
+        // This is a simple implementation for one guest.
+        // For multiple guests, this would need to handle a dynamic number of streams.
+        if (!session.guestStream) {
+          const guestFile = path.join(recordingsDir, `recording-${data.code}-guest.webm`);
+          const guestStream = fs.createWriteStream(guestFile);
+          session.guestStream = guestStream;
+          console.log(`Guest connected to session: ${data.code} and file stream created.`);
         }
+        // Write the audio data to the guest's file stream
+        session.guestStream.write(Buffer.from(data.audioData, 'base64'));
         break;
       
       case 'stop':
         // A stop message was received from the host
-        if (sessions[data.code]) {
-          console.log(`Stopping recording for session: ${data.code}`);
+        console.log(`Stopping recording for session: ${data.code}`);
 
-          // Close the file stream
-          if (sessions[data.code].fileStream) {
-            sessions[data.code].fileStream.end();
-            sessions[data.code].fileStream = null;
-          }
-          
-          // Notify the host and guest that the recording is saved
-          const downloadUrl = `/recordings/recording-${data.code}.webm`;
-          if (sessions[data.code].host) {
-            sessions[data.code].host.send(JSON.stringify({ type: 'recording_saved', downloadUrl }));
-          }
-          if (sessions[data.code].guest) {
-            sessions[data.code].guest.send(JSON.stringify({ type: 'recording_saved' }));
-          }
-
-          // Clean up the session
-          delete sessions[data.code];
+        // Close all active file streams
+        if (session.hostStream) {
+          session.hostStream.end();
+          session.hostStream = null;
         }
+        if (session.guestStream) {
+          session.guestStream.end();
+          session.guestStream = null;
+        }
+        
+        // Notify the host and guest that the recording is saved
+        const downloadUrls = [];
+        if (session.host) {
+            downloadUrls.push(`/recordings/recording-${data.code}-host.webm`);
+        }
+        if (session.guest) {
+            downloadUrls.push(`/recordings/recording-${data.code}-guest.webm`);
+        }
+        
+        if (session.host) {
+          session.host.send(JSON.stringify({ type: 'recording_saved', downloadUrls }));
+        }
+        if (session.guest) {
+          session.guest.send(JSON.stringify({ type: 'recording_saved' }));
+        }
+
+        // Clean up the session
+        delete sessions[data.code];
         break;
     }
   });
@@ -124,23 +142,29 @@ wss.on('connection', (ws) => {
   // Handle client disconnection
   ws.on('close', () => {
     console.log('Client disconnected.');
-    // Check if this was a host and clean up the session
+    // Check which session the client belonged to and clean up
     for (const code in sessions) {
       if (sessions[code].host === ws || sessions[code].guest === ws) {
-        if (sessions[code].fileStream) {
-          console.log(`Client disconnected unexpectedly. Ending file stream for session: ${code}`);
-          sessions[code].fileStream.end();
-          sessions[code].fileStream = null;
+        // Find which stream to end
+        let streamToEnd = null;
+        if (sessions[code].host === ws && sessions[code].hostStream) {
+          console.log(`Host disconnected unexpectedly. Ending file stream for session: ${code}`);
+          streamToEnd = sessions[code].hostStream;
+          sessions[code].hostStream = null;
+        } else if (sessions[code].guest === ws && sessions[code].guestStream) {
+          console.log(`Guest disconnected unexpectedly. Ending file stream for session: ${code}`);
+          streamToEnd = sessions[code].guestStream;
+          sessions[code].guestStream = null;
+        }
+
+        if (streamToEnd) {
+          streamToEnd.end();
         }
         
-        // Notify the other participant if they are still connected
-        if (sessions[code].host && sessions[code].host !== ws) {
-          sessions[code].host.send(JSON.stringify({ type: 'recording_ended' }));
-        } else if (sessions[code].guest && sessions[code].guest !== ws) {
-          sessions[code].guest.send(JSON.stringify({ type: 'recording_ended' }));
+        // Check if both streams are null, if so delete the session
+        if (!sessions[code].hostStream && !sessions[code].guestStream) {
+            delete sessions[code];
         }
-        
-        delete sessions[code];
         break;
       }
     }
