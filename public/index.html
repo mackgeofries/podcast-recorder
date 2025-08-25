@@ -113,6 +113,7 @@
         let wakeLock = null;
         let isHost = false;
         let currentSessionCode = null;
+        let micStream = null;
 
         // --- UI State Management Functions ---
         const showView = (viewId) => {
@@ -180,38 +181,45 @@
         // --- Start Recording Function (now includes sync tone generation) ---
         const startRecording = async (code) => {
             try {
-                // Get microphone audio stream
-                const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                // If mic stream is not already available, get it now (for guest)
+                if (!micStream) {
+                    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                }
 
                 // Create a new AudioContext
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-                // Create the sync tone oscillator
-                const oscillator = audioContext.createOscillator();
-                oscillator.type = 'sine';
-                oscillator.frequency.setValueAtTime(1000, audioContext.currentTime); // A 1000 Hz tone for a clear spike
-                
-                // Create a destination for the oscillator stream
-                const toneDestination = audioContext.createMediaStreamDestination();
-                oscillator.connect(toneDestination);
+                // Create source nodes for the microphone and the tone
+                const micSource = audioContext.createMediaStreamSource(micStream);
+                const toneSource = audioContext.createOscillator();
+                toneSource.type = 'sine';
+                toneSource.frequency.setValueAtTime(1000, audioContext.currentTime); // 1000 Hz tone
 
-                // Start the oscillator
-                oscillator.start();
-                
-                // Stop the tone after 0.5 seconds
+                // Create a gain node for mixing
+                const gainNode = audioContext.createGain();
+                gainNode.gain.setValueAtTime(1, audioContext.currentTime);
+
+                // Connect both sources to the mixer
+                micSource.connect(gainNode);
+                toneSource.connect(gainNode);
+
+                // Connect mixer to the destination
+                const destination = audioContext.createMediaStreamDestination();
+                gainNode.connect(destination);
+
+                // Play the tone after a 500ms delay for a cleaner start
                 setTimeout(() => {
-                    oscillator.stop();
-                    oscillator.disconnect();
+                    toneSource.start();
+                    // Stop the tone after 500ms
+                    setTimeout(() => {
+                        toneSource.stop();
+                        toneSource.disconnect();
+                        console.log('Sync tone played and stopped.');
+                    }, 500);
                 }, 500);
 
-                // Combine the microphone track and the tone track into a single stream
-                const combinedStream = new MediaStream();
-                
-                // Add the microphone's audio track
-                micStream.getAudioTracks().forEach(track => combinedStream.addTrack(track));
-                
-                // Add the tone's audio track
-                toneDestination.stream.getAudioTracks().forEach(track => combinedStream.addTrack(track));
+                // Create a new stream from the destination node
+                const combinedStream = destination.stream;
 
                 mediaRecorder = new MediaRecorder(combinedStream, { mimeType: 'audio/webm' });
 
@@ -259,8 +267,12 @@
         backToStartBtnGuest.addEventListener('click', () => showView('role-select-view'));
 
         startBtn.addEventListener('click', async () => {
-            showMessage("Generating session code...", 'info');
+            showMessage("Please allow microphone access...", 'info');
             try {
+                // Request microphone access here for the host
+                micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                showMessage("Generating session code...", 'info');
                 const response = await fetch('/start-session');
                 const data = await response.json();
 
@@ -329,7 +341,7 @@
                 };
             } catch (error) {
                 console.error('WebSocket connection failed:', error);
-                showMessage("Could not connect to server.", 'error');
+                showMessage("Could not connect to server or get microphone access. Please try again.", 'error');
             }
         });
 
