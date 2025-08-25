@@ -1,0 +1,13 @@
+{
+  "name": "podcast-recorder-app",
+  "version": "1.0.0",
+  "description": "A simple web-based podcast recorder.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}
