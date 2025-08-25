@@ -115,6 +115,7 @@
         let mediaRecorder;
         let wakeLock = null;
         let isHost = false;
+        let currentSessionCode = null;
 
         // --- UI State Management Functions ---
         const showView = (viewId) => {
@@ -208,6 +209,8 @@
                     return;
                 }
                 
+                currentSessionCode = data.uniqueCode;
+
                 // Then, get microphone access and start recording
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
@@ -226,7 +229,7 @@
                                 const base64Audio = reader.result.split(',')[1];
                                 ws.send(JSON.stringify({
                                     type: 'host_audio',
-                                    code: data.uniqueCode,
+                                    code: currentSessionCode,
                                     audioData: base64Audio
                                 }));
                             };
@@ -239,7 +242,7 @@
                     showView('recording-view');
                     hostRecordingInfo.classList.remove('hidden');
                     guestRecordingInfo.classList.add('hidden');
-                    sessionCodeSpan.textContent = data.uniqueCode;
+                    sessionCodeSpan.textContent = currentSessionCode;
                     recordingStatusText.textContent = "You are recording! Awaiting guest...";
                     stopBtn.classList.remove('hidden');
                     requestWakeLock();
@@ -248,12 +251,10 @@
                 ws.onmessage = event => {
                     const data = JSON.parse(event.data);
                     if (data.type === 'recording_saved') {
-                        // The server sent a message that the recording is saved, so we can now download it.
-                        downloadLink.href = data.downloadUrl;
-                        downloadArea.classList.remove('hidden');
-                        showMessage("Recording saved successfully! Download your file below.", 'success');
-                        mediaRecorder.stop();
+                        // This should now happen for the guest.
+                        showMessage("Recording saved successfully! The session has ended.", 'success');
                         ws.close();
+                        showView('guest-view'); // Reset guest view
                     }
                 };
 
@@ -287,8 +288,15 @@
 
         stopBtn.addEventListener('click', () => {
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                // Send the stop command and immediately stop the local recording
                 showMessage("Stopping and saving recording...", 'info');
                 ws.send(JSON.stringify({ type: 'stop' }));
+                mediaRecorder.stop();
+                ws.close(); // Force a disconnect to trigger server-side saving
+
+                // Show the download link immediately, as we're not waiting for server confirmation
+                downloadLink.href = `/recordings/recording-${currentSessionCode}.webm`;
+                downloadArea.classList.remove('hidden');
                 stopBtn.classList.add('hidden');
             }
         });
